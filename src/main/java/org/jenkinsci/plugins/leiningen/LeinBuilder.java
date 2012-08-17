@@ -138,6 +138,16 @@ public class LeinBuilder extends Builder {
         public boolean getUseFrench() {
             return useFrench;
         }
+
+        public LeinInstallation[] getInstallations() {
+            // TODO Auto-generated method stub
+            return null;
+        }
+
+        public void setInstallations(LeinInstallation[] installations) {
+            // TODO Auto-generated method stub
+            
+        }
     }
 }
 
