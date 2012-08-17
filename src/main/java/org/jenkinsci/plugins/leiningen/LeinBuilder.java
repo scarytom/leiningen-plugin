@@ -1,10 +1,16 @@
 package org.jenkinsci.plugins.leiningen;
+import hudson.EnvVars;
+import hudson.FilePath;
 import hudson.Launcher;
 import hudson.Extension;
+import hudson.Util;
+import hudson.util.ArgumentListBuilder;
 import hudson.util.FormValidation;
 import hudson.model.AbstractBuild;
 import hudson.model.BuildListener;
 import hudson.model.AbstractProject;
+import hudson.model.Computer;
+import hudson.model.Result;
 import hudson.tasks.Builder;
 import hudson.tasks.BuildStepDescriptor;
 import net.sf.json.JSONObject;
@@ -16,50 +22,102 @@ import javax.servlet.ServletException;
 import java.io.IOException;
 
 /**
- * Sample {@link Builder}.
- *
- * <p>
- * When the user configures the project and enables this builder,
- * {@link DescriptorImpl#newInstance(StaplerRequest)} is invoked
- * and a new {@link LeinBuilder} is created. The created
- * instance is persisted to the project configuration XML by using
- * XStream, so this allows you to use instance fields (like {@link #name})
- * to remember the configuration.
- *
- * <p>
- * When a build is performed, the {@link #perform(AbstractBuild, Launcher, BuildListener)}
- * method will be invoked. 
- *
- * @author Kohsuke Kawaguchi
+ * @author Tom Denley
  */
 public class LeinBuilder extends Builder {
 
-    private final String name;
-
-    // Fields in config.jelly must match the parameter names in the "DataBoundConstructor"
+    private final String leiningenName;
+    private final String tasks;
+    
     @DataBoundConstructor
-    public LeinBuilder(String name) {
-        this.name = name;
+    public LeinBuilder(String leiningenName, String tasks) {
+        this.leiningenName = leiningenName;
+        this.tasks = tasks;
     }
 
-    /**
-     * We'll use this from the <tt>config.jelly</tt>.
-     */
-    public String getName() {
-        return name;
+    public String getTasks() {
+        return tasks;
+    }
+
+    public String getLeiningenName() {
+        return leiningenName;
+    }
+
+    public LeinInstallation getLein() {
+        for (LeinInstallation installation : getDescriptor().getInstallations()) {
+            if (leiningenName != null && installation.getName().equals(leiningenName)) {
+                return installation;
+            }
+        }
+        return null;
     }
 
     @Override
-    public boolean perform(AbstractBuild build, Launcher launcher, BuildListener listener) {
-        // This is where you 'build' the project.
-        // Since this is a dummy, we just say 'hello world' and call that a build.
+    public boolean perform(AbstractBuild<?,?> build, Launcher launcher, BuildListener listener)  throws InterruptedException, IOException {
+        LeinLogger leinLogger = new LeinLogger(listener);
+        leinLogger.info("Launching build.");
 
-        // This also shows how you can consult the global configuration of the builder
-        if (getDescriptor().getUseFrench())
-            listener.getLogger().println("Bonjour, "+name+"!");
-        else
-            listener.getLogger().println("Hello, "+name+"!");
-        return true;
+        EnvVars env = build.getEnvironment(listener);
+
+        //Tasks
+        String normalizedTasks = tasks.replaceAll("[\t\r\n]+", " ");
+        normalizedTasks = Util.replaceMacro(normalizedTasks, env);
+        normalizedTasks = Util.replaceMacro(normalizedTasks, build.getBuildVariables());
+
+        //Build arguments
+        ArgumentListBuilder args = new ArgumentListBuilder();
+        LeinInstallation installation = getLein();
+        if (installation == null) {
+            args.add(launcher.isUnix() ? LeinInstallation.UNIX_LEIN_COMMAND : LeinInstallation.WINDOWS_LEIN_COMMAND);
+        } else {
+            installation = installation.forNode(Computer.currentComputer().getNode(), listener);
+            installation = installation.forEnvironment(env);
+            String exe = installation.getExecutable(launcher);
+            if (exe == null) {
+                leinLogger.error("Can't retrieve the Leiningen executable.");
+                return false;
+            }
+            args.add(exe);
+        }
+        args.addKeyValuePairs("-D", build.getBuildVariables());
+        args.addTokenized(normalizedTasks);
+        if (installation != null) {
+            env.put("LEIN_HOME", installation.getHome());
+        }
+
+        if (!launcher.isUnix()) {
+            // on Windows, executing batch file can't return the correct error code,
+            // so we need to wrap it into cmd.exe.
+            // double %% is needed because we want ERRORLEVEL to be expanded after
+            // batch file executed, not before. This alone shows how broken Windows is...
+            args.prepend("cmd.exe", "/C");
+            args.add("&&", "exit", "%%ERRORLEVEL%%");
+        }
+
+        FilePath rootLauncher = build.getWorkspace();
+
+        //Not call from an Executor
+        if (rootLauncher == null) {
+            rootLauncher = build.getProject().getSomeWorkspace();
+        }
+
+        try {
+            LeinConsoleAnnotator gca = new LeinConsoleAnnotator(listener.getLogger(), build.getCharset());
+            int returnCode;
+            try {
+                returnCode = launcher.launch().cmds(args).envs(env).stdout(gca).pwd(rootLauncher).join();
+            } finally {
+                gca.forceEol();
+            }
+            final boolean result = (returnCode == 0);
+            build.setResult(result ? Result.SUCCESS : Result.FAILURE);
+            return result;
+        } catch (IOException e) {
+            Util.displayIOException(e, listener);
+            e.printStackTrace(listener.fatalError("command execution failed"));
+            build.setResult(Result.FAILURE);
+            return false;
+        }
     }
 
     // Overridden for better type safety.
@@ -106,7 +164,7 @@ public class LeinBuilder extends Builder {
             return FormValidation.ok();
         }
 
-        public boolean isApplicable(Class<? extends AbstractProject> aClass) {
+        public boolean isApplicable(@SuppressWarnings("rawtypes") Class<? extends AbstractProject> aClass) {
             // Indicates that this builder can be used with all kinds of project types 
             return true;
         }
