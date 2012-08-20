@@ -11,6 +11,7 @@ import hudson.model.BuildListener;
 import hudson.model.AbstractProject;
 import hudson.model.Computer;
 import hudson.model.Result;
+import hudson.plugins.gradle.Messages;
 import hudson.tasks.Builder;
 import hudson.tasks.BuildStepDescriptor;
 import net.sf.json.JSONObject;
@@ -173,7 +174,7 @@ public class LeinBuilder extends Builder {
          * This human readable name is used in the configuration screen.
          */
         public String getDisplayName() {
-            return "Say hello world";
+            return Messages.step_displayName();
         }
 
         @Override
